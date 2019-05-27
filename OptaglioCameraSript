@@ -1,0 +1,776 @@
+#!/usr/bin/python3
+# Testcamera.py by Jasper Kindt [http://jasperkindt.com/]
+# This is an script to move camera across a large bitmap to render it in pieces
+# Copyright 2014 Optaglio, s.r.o.
+#--- ### Header
+
+bl_info = {
+    "name": "Optaglio Camera",
+    "author": "Jasper Kindt",
+    "version": (1, 0, 1),
+    "blender": (2, 7, 1),
+    "api": 36147,
+    "location": "Scene camera property panel",
+    "category": "Camera",
+    "description": "Moves Camera across matrix",
+    "warning": "",
+    "wiki_url": "...",
+    "tracker_url": "..."
+    }
+'''
+Created on 24 Jul 2014
+
+Latest changes: multiple camera's possible
+
+@author: kindtj
+'''
+
+import math, bpy, sys, time, datetime#, numpy, matplotlib,
+from bpy.props import *
+from io import BytesIO
+#import numpy as np
+#import matplotlib.image as Image
+#import mahotas as mh
+#import mahotas.histogram as hi
+
+#    Set RNA properties (saved in blender file and attached to camera)
+bpy.types.Object.testX = IntProperty(
+    name = "TEST X", description="Row of test tile",
+    min = 0, max = 99, soft_max=99,
+    default = 0)
+
+bpy.types.Object.testY = IntProperty(
+    name = "TEST Y", description="Column of test tile", 
+    min = 0, max = 99, soft_max=99,
+    default = 0)
+
+bpy.types.Object.numX = IntProperty(
+    name = "Horizontal steps", description="Number of horizontal steps",
+    min = 0, max = 99, soft_max=99,
+    default = 33)
+
+bpy.types.Object.numL = IntProperty(
+    name="Levels", description="Number of levels", 
+    min = 0, max = 7, soft_max=7,
+    default = 6)
+
+bpy.types.Object.numY = IntProperty(
+    name="Vertical steps", description="Number of vertical steps", 
+    min = 0, max = 99, soft_max=99,
+    default = 0)
+  
+bpy.types.Object.renderOutput = StringProperty(
+    name = "Render output", 
+    subtype="FILE_PATH", 
+    default = r"D:/Optagliocam/")
+ 
+bpy.types.Object.testBool = BoolProperty(
+    name = "Test Render")
+
+print('Starting camera script. Please check your scene camera PROPERTIES and the camera OBJECT panel for execution.')
+
+scene = bpy.data.scenes["Scene"]
+
+# determines wether to enable the 'create levels' button
+#processLevels=True
+
+# datestamp
+ts = 0.0
+# declare camera class so it can be accessed later for levels
+oc = None
+
+# Test function to go through the code before the user decides to press anything (debug) 
+def debug_test():
+    kwargs = {'orthoScale': bpy.data.cameras[bpy.context.scene.camera.name].ortho_scale, 'resX': bpy.context.scene.render.resolution_x, 'resY': bpy.context.scene.render.resolution_y, 'A': scene.camera.numX, 'B': scene.camera.numY, 'C': scene.camera.testX, 'D': scene.camera.testY, 'xpos': scene.camera.location.x, 'ypos': scene.camera.location.y, 'zpos': scene.camera.location.z, 'rx': scene.camera.rotation_euler[0], 'ry': scene.camera.rotation_euler[1], 'rz': scene.camera.rotation_euler[2], 'test': scene.camera.testBool, 'output': scene.camera.renderOutput, 'L': scene.camera.numL}
+    oc = OptaglioCamera(**kwargs)
+    oc.handle_levels()
+
+if not scene.camera:
+    #print("No camera attached to scene, creating camera with default parameters")
+    pass
+    # create camera with default parameters
+    # create object, obdata and link
+    #cam_obj = bpy.ops.object.camera_add(view_align=False, enter_editmode=False, location=(0, 0, 0), rotation=(0.0, 0.0, 0.0), layers=(True, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, ))
+    #cam_data= bpy.types.Camera
+    #cam_obj.link(cam_data)
+    #scene.link(cam_obj)
+    #bpy.data.cameras[bpy.context.scene.camera.name].type = 'ORTHO'
+    
+else:
+    # check if camera is orthogonal
+    if bpy.data.cameras[bpy.context.scene.camera.name].type != 'ORTHO':
+        # set the camera to orthogonal if it's not orthogonal
+        bpy.data.cameras[bpy.context.scene.camera.name].type = 'ORTHO'
+    # check if camera has parameters attached to it
+    if not scene.camera.items():
+        print("Camera parameters not filled in, adding default parameters")
+        scene.camera.testX=0
+        scene.camera.testY=0
+        scene.camera.numX=0
+        scene.camera.numY=0
+        scene.camera.renderOutput=r"C:/Optagliocam/"
+        scene.camera.testBool=False
+        scene.camera.numL=6
+    else:
+        pass
+
+#    Camera Property panel
+class CameraPropertyPanel(bpy.types.Panel):
+    bl_idname = "OPT_select"
+    bl_label = "Properties"
+    bl_space_type = 'PROPERTIES'
+    bl_region_type = 'WINDOW'
+    bl_context = "object"
+         
+    def draw(self, context):
+        obj = context.object
+        if not obj:
+            return
+        if obj == scene.camera:  
+            layout = self.layout
+            row = layout.row
+            if scene.camera.testBool:
+                layout.prop(obj, "testBool", icon="COLOR_GREEN")
+                layout.prop(obj, 'testX')
+                layout.prop(obj, 'testY')                
+                layout.separator()                  
+                layout.operator("object.execute", text="RENDER TEST TILE", icon="RENDER_STILL")       
+                layout.prop(obj, 'numX')
+                layout.prop(obj, 'numY')
+                layout.prop(obj, "renderOutput") 
+                layout.separator()
+                layout.operator("object.levels", text="CREATE " + str(scene.camera.numL) + " LEVELS", icon="NLA")
+                layout.prop(obj, 'numL')
+                #row = layout.row()
+                #row.operator("object.levels", text="CREATE LEVELS", icon="NLA")
+                #row.prop(obj, 'numL')
+            else:
+                layout.prop(obj, "testBool", icon="COLOR_RED")
+                layout.prop(obj, 'testX')
+                layout.prop(obj, 'testY')                
+                layout.separator()  
+                layout.operator("object.execute", text="RENDER ALL TILES", icon="RENDER_ANIMATION")
+                layout.prop(obj, 'numX')
+                layout.prop(obj, 'numY')    
+                layout.prop(obj, "renderOutput")            
+                layout.separator()
+                layout.operator("object.levels", text="CREATE " + str(scene.camera.numL) + " LEVELS", icon="NLA")
+                layout.prop(obj, 'numL')     
+                #row = layout.row()
+                #row.operator("object.levels", text="CREATE LEVELS", icon="NLA")                
+                #row.prop(obj, 'numL')
+            #row.enabled = processLevels
+        else:
+            pass
+
+#    Button operator
+class OBJECT_OT_levels(bpy.types.Operator):
+    bl_label = "LEVELS"
+    bl_idname = "object.levels"
+    bl_description = "Create seperate bitmaps from rendered images for each level"
+ 
+    def execute(self, context):
+        self.report({'INFO'}, 'Rendering level(s)'+'\n'+'=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=')
+        
+        kwargs = {'orthoScale': bpy.data.cameras[bpy.context.scene.camera.name].ortho_scale, 'resX': bpy.context.scene.render.resolution_x, 'resY': bpy.context.scene.render.resolution_y, 'A': scene.camera.numX, 'B': scene.camera.numY, 'C': scene.camera.testX, 'D': scene.camera.testY, 'xpos': scene.camera.location.x, 'ypos': scene.camera.location.y, 'zpos': scene.camera.location.z, 'rx': scene.camera.rotation_euler[0], 'ry': scene.camera.rotation_euler[1], 'rz': scene.camera.rotation_euler[2], 'test': scene.camera.testBool, 'output': scene.camera.renderOutput, 'L': scene.camera.numL}
+        oc = OptaglioCamera(**kwargs)
+               
+        report = ""
+        #execute main algorythm and report via info panel        
+        try:
+            report += oc.handle_levels()
+        except:
+            errorcode = sys.exc_info()[0]
+            error = sys.exc_info()[1]
+            self.report({'INFO'}, "Unexpected error: \n" + str(errorcode) + '\n' + str(error))
+        
+        self.report({'INFO'}, report)
+        
+        self.report({'INFO'}, '=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=' + '\n' + 'Finished rendering level(s)')
+        return {'FINISHED'}
+
+#    Button operator
+class OBJECT_OT_render(bpy.types.Operator):
+    bl_label = "RENDER"
+    bl_idname = "object.execute"
+    bl_description = "Execute the camera loop"
+ 
+    def execute(self, context):
+        self.report({'INFO'}, 'Rendering image(s)'+'\n'+'=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=')
+        
+        kwargs = {'orthoScale': bpy.data.cameras[bpy.context.scene.camera.name].ortho_scale, 'resX': bpy.context.scene.render.resolution_x, 'resY': bpy.context.scene.render.resolution_y, 'A': scene.camera.numX, 'B': scene.camera.numY, 'C': scene.camera.testX, 'D': scene.camera.testY, 'xpos': scene.camera.location.x, 'ypos': scene.camera.location.y, 'zpos': scene.camera.location.z, 'rx': scene.camera.rotation_euler[0], 'ry': scene.camera.rotation_euler[1], 'rz': scene.camera.rotation_euler[2], 'test': scene.camera.testBool, 'output': scene.camera.renderOutput, 'L': scene.camera.numL}
+        oc = OptaglioCamera(**kwargs)
+               
+        report = ""
+        #execute main algorythm and report via info panel        
+        try:
+            report += oc.handle_render()
+        except:
+            errorcode = sys.exc_info()[0]
+            error = sys.exc_info()[1]
+            self.report({'INFO'}, "Unexpected error: \n" + str(errorcode) + '\n' + str(error))
+        
+        self.report({'INFO'}, report)
+        
+        self.report({'INFO'}, '=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=' + '\n' + 'Finished rendering image(s)')
+            
+        return {'FINISHED'}
+
+#--- ### Optaglio camera class
+# This class holds the data and methods, that are used throughout the script
+#
+#--- ### DATA
+# orthoScale: orthogonal scale of camera - horizontal + vertical step of 1 in unit scales
+# resX: horizontal resolution of render
+# resY: vertical resolution of render
+# A: number of horizontal steps
+# B: number of vertical steps
+# C: number of horizontal test step
+# D: number of vertical test step
+# L: number of levels to render
+# xpos: camera X-position
+# ypos: camera Y-position
+# zpos: camera Z-position
+# rx: camera X-rotation
+# ry: camera Y-rotation
+# rz: camera Z-rotation
+# test: Boolean value determining if it's a testrender (using C+D) or full loop (0-A: horizontal steps. 0-B: vertical steps)
+# output: output folder
+#
+#--- ### FUNCTIONS
+# handle_execute(): Handles the iterating of translating camera and render
+# handle_levels(): Handles the iterating of translating camera and render with material changing according to level
+# get_properties(): prints all properties to console and returns it to caller
+# get_property(key): prints selected property to console and returns it to caller
+#
+class OptaglioCamera:
+    # Initialiser with optional parameters
+    def __init__(self, **kwargs):
+        self.properties = kwargs
+        # init camera and render resolution
+        scene.camera.rotation_mode = 'XYZ'
+        bpy.context.scene.render.resolution_x = self.properties['resX']
+        bpy.context.scene.render.resolution_x = self.properties['resY']        
+        self.properties['xpos'] = -(((self.properties['A']*self.properties['orthoScale'])/2)-self.properties['orthoScale']/2)
+        self.properties['ypos'] = ((self.properties['B']*self.properties['orthoScale'])/2)-self.properties['orthoScale']/2
+        self.properties['rx'] = 0.0
+        self.properties['ry'] = 0.0
+        self.properties['rz'] = 0.0        
+        
+        # Update scene camera position
+        scene.camera.location.x = self.properties['xpos']
+        scene.camera.location.y = self.properties['ypos']   
+        # Update scene camera rotation in euler angles
+        scene.camera.rotation_euler[0] = float(self.get_property('rx')*(math.pi/180.0))
+        scene.camera.rotation_euler[1] = float(self.get_property('ry')*(math.pi/180.0))
+        scene.camera.rotation_euler[2] = float(self.get_property('rz')*(math.pi/180.0))
+                
+        print(self.properties)
+        
+    def get_properties(self):
+        return self.properties
+
+    def get_property(self, key):
+        return self.properties.get(key, None)
+    
+    def generate_filename_render(self, x, y):        
+        # return filename in format 3#YYXX.BMP
+        return '3#{0}{1}{2}{3}'.format(int(y/10), int(y%10), int(x/10), int(x%10))+".BMP"
+    
+    def generate_filename_levels(self, x, y, l):        
+        # return filename in format 3#YYXX_0L.BMP
+        return '3#{0}{1}{2}{3}'.format(int(y/10), int(y%10), int(x/10), int(x%10))+'_0'+str(l)+".BMP"
+    
+    def generate_txtfilename(self, x, y, l):                       
+        # return filename in format 3#YYXX_0L.BMP
+        return '3#{0}{1}{2}{3}'.format(int(y/10), int(y%10), int(x/10), int(x%10))+'_0'+str(l)+".TXT"
+    
+    def handle_levels(self):
+        # initiate the report string to be shown in the INFO window
+        report =''
+        # Store current render settings
+        settings = bpy.context.scene.render.image_settings
+        format = settings.file_format
+        mode = settings.color_mode
+        depth = settings.color_depth
+            
+        # Change render settings to our target format
+        settings.file_format = 'BMP'
+        settings.color_mode = 'RGB'
+        settings.color_depth = '8'
+        
+        # SWITCH TO CYCLES RENDERING and set some settings to decrease total render time
+        bpy.context.scene.render.engine = 'CYCLES'
+        bpy.data.scenes["Scene"].cycles.device='GPU'
+        bpy.data.scenes["Scene"].cycles.use_cache=True
+        bpy.data.scenes["Scene"].cycles.max_bounces=9
+        bpy.data.scenes["Scene"].cycles.max_bounces=0
+        bpy.data.scenes["Scene"].cycles.tile_x = 128
+        bpy.data.scenes["Scene"].cycles.tile_y = 128
+        
+        ts = time.time()
+        st = str(datetime.datetime.fromtimestamp(ts).strftime('%Y_%m_%d-%H_%M_%S'))
+        
+        # change material from all levels to selected level
+        # 0: all levels
+        # 1: selected level
+        bpy.data.materials['Material.002'].node_tree.nodes['SelectLevel'].inputs[0].default_value=1
+                
+        # test render
+        if self.properties['test']:
+            # init camera position
+            self.properties['xpos'] = float((-(((self.properties['A']*self.properties['orthoScale'])/2)-self.properties['orthoScale']/2)) + self.properties['orthoScale']*self.properties['C'])
+            self.properties['ypos'] = float((((self.properties['B']*self.properties['orthoScale'])/2)-self.properties['orthoScale']/2) - self.properties['orthoScale']*self.properties['D'])
+                        
+            # Update scene camera position
+            scene.camera.location.x = self.properties['xpos']
+            scene.camera.location.y = self.properties['ypos']
+            scene.camera.location.z = self.properties['zpos']            
+            
+            # number of levels to render
+            levels = self.properties['L']
+                        
+            for i in range(1, levels):
+                # set treshold
+                bpy.data.materials['Material.002'].node_tree.nodes['Levels'].inputs[1].default_value=float(i/levels)
+                
+                # set file path
+                fullpath = self.properties['output']+self.generate_filename_levels(self.properties['C'], self.properties['D'], i)
+                bpy.data.scenes["Scene"].render.filepath = fullpath
+                bpy.ops.render.render(write_still=True)
+                        
+                # pick an image datablock
+                img = bpy.data.images["Render Result"]
+                img.save_render(fullpath)
+            
+                report += '\n' 
+                report += "Level coefficient: " + str(bpy.data.materials['Material.002'].node_tree.nodes['Levels'].inputs[1].default_value) + '\n'
+                report += "Finished rendering image: " + fullpath + '\n'
+                
+        # whole render loop
+        else:
+            # init camera start position            
+            self.properties['xpos'] = -(((self.properties['A']*self.properties['orthoScale'])/2)-self.properties['orthoScale']/2)
+            self.properties['ypos'] = ((self.properties['B']*self.properties['orthoScale'])/2)-self.properties['orthoScale']/2
+                        
+            # number of levels to render
+            levels = self.properties['L']
+            
+            # rendering
+            for y in range(0, self.properties['B']):
+                for x in range(0, self.properties['A']):   
+                    for i in range(1, levels):   
+                        # set treshold
+                        bpy.data.materials['Material.002'].node_tree.nodes['Levels'].inputs[1].default_value=float(i/levels)                                    
+                        # set file path
+                        fullpath = self.properties['output']+self.generate_filename_levels(x, y, i)
+                        bpy.data.scenes["Scene"].render.filepath = fullpath
+                        bpy.ops.render.render(write_still=True)
+                                    
+                        # pick an image datablock
+                        img = bpy.data.images["Render Result"]
+                        img.save_render(fullpath)
+                        
+                    # iteration
+                    self.properties['xpos'] += float(self.get_property('orthoScale'))
+                        
+                    # Update scene camera position
+                    scene.camera.location.x = self.properties['xpos']
+                    scene.camera.location.y = self.properties['ypos']           
+                        
+                    report += '\n' 
+                    report += "Level coefficient: " + str(bpy.data.materials['Material.002'].node_tree.nodes['Levels'].inputs[1].default_value) + '\n'
+                    report += "Camera location set to X:" + str(self.properties['xpos']) + ", Y: " + str(self.properties['ypos']) + '\n'
+                    report += "Finished rendering image: " + fullpath + '\n'
+                         
+                # set horizontal to 0 position
+                self.properties['xpos'] = -(((self.properties['A']*self.properties['orthoScale'])/2)-self.properties['orthoScale']/2)
+                    
+                # iteration
+                self.properties['ypos'] -= float(self.get_property('orthoScale'))
+                    
+                # Update scene camera position
+                scene.camera.location.x = self.properties['xpos']
+                scene.camera.location.y = self.properties['ypos']
+                scene.camera.location.z = self.properties['zpos']  
+            
+            
+            '''
+                       
+            # rendering       
+            for i in range(1, levels):   
+                # set treshold
+                bpy.data.materials['Material.002'].node_tree.nodes['Levels'].inputs[1].default_value=float(i/levels)
+                ##########
+                for y in range(0, self.properties['B']):
+                    for x in range(0, self.properties['A']):                                         
+                        # set file path
+                        fullpath = self.properties['output']+self.generate_filename_levels(x, y, i)
+                        
+                        # iteration
+                        self.properties['xpos'] += float(self.get_property('orthoScale'))
+                
+                        report += '\n' 
+                        report += "Level coefficient: " + str(bpy.data.materials['Material.002'].node_tree.nodes['Levels'].inputs[1].default_value) + '\n'
+                        report += "Camera location set to X:" + str(self.properties['xpos']) + ", Y: " + str(self.properties['ypos']) + '\n'
+                        report += "Finished rendering image: " + fullpath + '\n'
+                    
+                    # set horizontal to 0 position
+                    self.properties['xpos'] = -(((self.properties['A']*self.properties['orthoScale'])/2)-self.properties['orthoScale']/2)
+                    
+                    # iteration
+                    self.properties['ypos'] -= float(self.get_property('orthoScale'))
+                
+                ##########
+                for y in range(0, self.properties['B']):
+                    for x in range(0, self.properties['A']):                                         
+                        # set file path
+                        fullpath = self.properties['output']+self.generate_filename_levels(x, y, i)
+                        bpy.data.scenes["Scene"].render.filepath = fullpath
+                        bpy.ops.render.render(write_still=True)
+                                    
+                        # pick an image datablock
+                        img = bpy.data.images["Render Result"]
+                        img.save_render(fullpath)
+                        
+                        # iteration
+                        self.properties['xpos'] += float(self.get_property('orthoScale'))
+                        
+                        # Update scene camera position
+                        scene.camera.location.x = self.properties['xpos']
+                        scene.camera.location.y = self.properties['ypos']           
+                        
+                        report += '\n' 
+                        report += "Level coefficient: " + str(bpy.data.materials['Material.002'].node_tree.nodes['Levels'].inputs[1].default_value) + '\n'
+                        report += "Camera location set to X:" + str(self.properties['xpos']) + ", Y: " + str(self.properties['ypos']) + '\n'
+                        report += "Finished rendering image: " + fullpath + '\n'
+                         
+                    # set horizontal to 0 position
+                    self.properties['xpos'] = -(((self.properties['A']*self.properties['orthoScale'])/2)-self.properties['orthoScale']/2)
+                    
+                    # iteration
+                    self.properties['ypos'] -= float(self.get_property('orthoScale'))
+                    
+                    # Update scene camera position
+                    scene.camera.location.x = self.properties['xpos']
+                    scene.camera.location.y = self.properties['ypos']
+                    scene.camera.location.z = self.properties['zpos']                
+            '''    
+        ts2 = time.time()
+        st2 = str(datetime.datetime.fromtimestamp(ts2).strftime('%Y_%m_%d-%H_%M_%S'))
+        report += 'End time: ' + st2 + '\n'
+        report += 'Start time: ' + st + '\n'
+        ts3 = ts2-ts
+        report += 'Total render time in seconds: ' + str(ts3) + '\n'
+        
+        return report
+        
+    def handle_render(self):
+        # initiate the report string to be shown in the INFO window
+        report =''
+        # Store current render settings
+        settings = bpy.context.scene.render.image_settings
+        format = settings.file_format
+        mode = settings.color_mode
+        depth = settings.color_depth
+            
+        # Change render settings to our target format
+        settings.file_format = 'BMP'
+        settings.color_mode = 'RGB'
+        settings.color_depth = '8'
+        
+        # SWITCH TO CYCLES RENDERING and set some settings to decrease total render time
+        bpy.context.scene.render.engine = 'CYCLES'
+        bpy.data.scenes["Scene"].cycles.device='GPU'
+        bpy.data.scenes["Scene"].cycles.use_cache=True
+        bpy.data.scenes["Scene"].cycles.max_bounces=9
+        bpy.data.scenes["Scene"].cycles.max_bounces=0
+        bpy.data.scenes["Scene"].cycles.tile_x = 128
+        bpy.data.scenes["Scene"].cycles.tile_y = 128
+        
+        ts = time.time()
+        st = str(datetime.datetime.fromtimestamp(ts).strftime('%Y_%m_%d-%H_%M_%S'))
+        
+        # change material from all levels to selected level
+        # 0: all levels
+        # 1: selected level
+        bpy.data.materials['Material.002'].node_tree.nodes['SelectLevel'].inputs[0].default_value=0
+        
+        # test render
+        if self.properties['test']:
+            # init camera position
+            self.properties['xpos'] = float((-(((self.properties['A']*self.properties['orthoScale'])/2)-self.properties['orthoScale']/2)) + self.properties['orthoScale']*self.properties['C'])
+            self.properties['ypos'] = float((((self.properties['B']*self.properties['orthoScale'])/2)-self.properties['orthoScale']/2) - self.properties['orthoScale']*self.properties['D'])
+                        
+            # Update scene camera position
+            scene.camera.location.x = self.properties['xpos']
+            scene.camera.location.y = self.properties['ypos']
+            scene.camera.location.z = self.properties['zpos']            
+            
+            # Render                        
+            fullpath = self.properties['output']+self.generate_filename_render(self.properties['C'], self.properties['D'])            
+            bpy.data.scenes["Scene"].render.filepath = fullpath
+            bpy.ops.render.render(write_still=True)
+                        
+            # pick an image datablock
+            img = bpy.data.images["Render Result"]
+            img.save_render(fullpath)
+            
+            report += '\n' 
+            report += "Camera location set to X:" + str(self.properties['xpos']) + ", Y: " + str(self.properties['ypos']) + '\n'
+            report += "Finished rendering image: " + fullpath + '\n'
+                        
+        # whole render loop
+        else:
+            # init camera start position            
+            self.properties['xpos'] = -(((self.properties['A']*self.properties['orthoScale'])/2)-self.properties['orthoScale']/2)
+            self.properties['ypos'] = ((self.properties['B']*self.properties['orthoScale'])/2)-self.properties['orthoScale']/2
+                    
+            # rendering   
+            for y in range(0, self.properties['B']):
+                for x in range(0, self.properties['A']):  
+                    fullpath = self.properties['output']+self.generate_filename_render(x, y)
+                    
+                    bpy.data.scenes["Scene"].render.filepath = fullpath
+                    bpy.ops.render.render(write_still=True) 
+                                
+                    # pick an image datablock
+                    img = bpy.data.images["Render Result"]
+                    # Save image, this does NOT render anything!
+                    # It only means that the save command will use the current scene's render settings.
+                    img.save_render(fullpath)
+
+                    # iteration
+                    self.properties['xpos'] += float(self.get_property('orthoScale'))
+                    
+                    # Update scene camera position
+                    scene.camera.location.x = self.properties['xpos']
+                    scene.camera.location.y = self.properties['ypos'] 
+                                        
+                    report += "Camera location set to X:" + str(self.properties['xpos']) + ", Y: " + str(self.properties['ypos']) + '\n'
+                    report += "Finished rendering image: " + fullpath + '\n'
+                    report += '\n'
+                    
+                # set horizontal to 0 position
+                self.properties['xpos'] = -(((self.properties['A']*self.properties['orthoScale'])/2)-self.properties['orthoScale']/2)
+                
+                # iteration
+                self.properties['ypos'] -= float(self.get_property('orthoScale'))
+                
+                # Update scene camera position
+                scene.camera.location.x = self.properties['xpos']
+                scene.camera.location.y = self.properties['ypos']
+                scene.camera.location.z = self.properties['zpos']                
+        
+        ts2 = time.time()
+        st2 = str(datetime.datetime.fromtimestamp(ts2).strftime('%Y_%m_%d-%H_%M_%S'))
+        report += 'End time: ' + st2 + '\n'
+        report += 'Start time: ' + st + '\n'
+        ts3 = ts2-ts
+        report += 'Total render time in seconds: ' + str(ts3) + '\n'
+        
+        return report
+    
+    #--- ### Properties
+    
+    # orthogonal scale of camera
+    @property
+    def orthoScale(self):
+        return self.properties.get('orthoScale', 0)
+    
+    @orthoScale.setter
+    def orthoScale(self, s):
+        self.properties['orthoScale'] = s
+        bpy.data.cameras[bpy.context.scene.camera.name].ortho_scale = float(s)
+    
+    @orthoScale.deleter
+    def orthoScale(self):
+        del self.properties['orthoScale']
+    
+    # horizontal resolution of render
+    @property
+    def resX(self):
+        return self.properties.get('resX', 0)
+    
+    @resX.setter
+    def resX(self, resx):
+        self.properties['resX'] = resx
+        bpy.context.scene.render.resolution_x = float(resx)
+    
+    @resX.deleter
+    def resX(self):
+        del self.properties['resX']
+        
+    # vertical resolution of render
+    @property
+    def resY(self):
+        return self.properties.get('resY', 0)
+    
+    @resY.setter
+    def resY(self, resy):
+        self.properties['resY'] = resy
+        bpy.context.scene.render.resolution_y = float(resy)
+    
+    @resY.deleter
+    def resY(self):
+        del self.properties['resY']
+    
+    # number of horizontal steps
+    @property
+    def A(self):
+        return self.properties.get('A', 0)
+    
+    @A.setter
+    def A(self, a):
+        self.properties['A'] = a
+    
+    @A.deleter
+    def A(self):
+        del self.properties['A']
+        
+    # B: number of vertical steps
+    @property
+    def B(self):
+        return self.properties.get('B', 0)
+    
+    @B.setter
+    def B(self, b):
+        self.properties['B'] = b
+    
+    @B.deleter
+    def B(self):
+        del self.properties['B']
+        
+    # C: number of horizontal test step
+    @property
+    def C(self):
+        return self.properties.get('C', 0)
+    
+    @C.setter
+    def C(self, c):
+        self.properties['C'] = c
+    
+    @C.deleter
+    def C(self):
+        del self.properties['C']
+
+    # D: number of vertical test step
+    @property
+    def D(self):
+        return self.properties.get('D', 0)
+    
+    @D.setter
+    def D(self, d):
+        self.properties['D'] = d
+    
+    @D.deleter
+    def D(self):
+        del self.properties['D']
+    
+    #--- ### X-position of camera            
+    @property
+    def xpos(self):
+        return self.properties.get('xpos', 0)
+    
+    @xpos.setter
+    def xpos(self, x):
+        self.properties['xpos'] = x
+    
+    @xpos.deleter
+    def xpos(self):
+        del self.properties['xpos']
+    
+    #--- ### Y-position of camera            
+    @property
+    def ypos(self):
+        return self.properties.get('ypos', 0)
+    
+    @ypos.setter
+    def ypos(self, y):
+        self.properties['ypos'] = y
+    
+    @xpos.deleter
+    def ypos(self):
+        del self.properties['ypos']
+    
+    #--- ### Z-position of camera            
+    @property
+    def zpos(self):
+        return self.properties.get('zpos', 0)
+    
+    @xpos.setter
+    def zpos(self, z):
+        self.properties['zpos'] = z
+    
+    @zpos.deleter
+    def zpos(self):
+        del self.properties['zpos']
+        
+    #--- ### rotation over X        
+    @property
+    def rx(self):
+        return self.properties.get('rx', 0)
+    
+    @rx.setter
+    def rx(self, x):        
+        self.properties['rx'] = x
+    
+    @rx.deleter
+    def rx(self):
+        del self.properties['rx']
+    
+    #--- ### rotation over Y        
+    @property
+    def ry(self):
+        return self.properties.get('ry', 0)
+    
+    @ry.setter
+    def ry(self, y):
+        self.properties['ry'] = y       
+    
+    @ry.deleter
+    def ry(self):
+        del self.properties['ry']
+        
+    #--- ### rotation over Z        
+    @property
+    def rz(self):
+        return self.properties.get('rz', 0)
+    
+    @rz.setter
+    def rz(self, z):
+        self.properties['rz'] = z
+    
+    @rz.deleter
+    def rz(self):
+        del self.properties['rz']
+    
+    # L: number of levels
+    @property
+    def L(self):
+        return self.properties.get('L', 0)
+    
+    @L.setter
+    def L(self, l):
+        self.properties['L'] = l
+    
+    @L.deleter
+    def L(self):
+        del self.properties['L']
+        
+#debug_test()
+
+# Registration of classes
+bpy.utils.register_class(CameraPropertyPanel)
+bpy.utils.register_class(OBJECT_OT_render)
+bpy.utils.register_class(OBJECT_OT_levels)
+
+#    Registration of module
+def register():
+    bpy.utils.register_module(__name__)
+ 
+def unregister():
+    bpy.utils.unregister_module(__name__)
+ 
+if __name__ == "__main__":
+    register()
